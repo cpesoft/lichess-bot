@@ -41,6 +41,7 @@ def signal_handler(signal, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 def is_final(exception):
+    logger.debug("Is final: {}".format(exception))
     return isinstance(exception, HTTPError) and exception.response.status_code < 500
 
 def upgrade_account(li):
@@ -53,17 +54,21 @@ def upgrade_account(li):
 @backoff.on_exception(backoff.expo, BaseException, max_time=600, giveup=is_final)
 def watch_control_stream(control_queue, li):
     response = li.get_event_stream()
+    logger.debug("/api/stream/event response: {}".format(response))
     try:
         for line in response.iter_lines():
+            logger.debug("Got line: {}".format(line))
             if line:
                 event = json.loads(line.decode('utf-8'))
                 control_queue.put_nowait(event)
             else:
                 control_queue.put_nowait({"type": "ping"})
+                logger.debug("ping")
     except (RemoteDisconnected, ChunkedEncodingError, ConnectionError, ProtocolError) as exception:
         logger.error("Terminating client due to connection error")
         traceback.print_exception(type(exception), exception, exception.__traceback__)
         control_queue.put_nowait({"type": "terminated"})
+    logger.debug("watch_control_stream_ended")    
 
 def start(li, user_profile, engine_factory, config):
     challenge_config = config["challenge"]
@@ -80,8 +85,11 @@ def start(li, user_profile, engine_factory, config):
     with logging_pool.LoggingPool(max_games+1) as pool:
         while not terminated:
             event = control_queue.get()
+            logger.debug("Got event: {}".format(event))
             if event["type"] == "terminated":
                 break
+            elif event["type"] == "ping":
+                logger.debug("Got ping event.")    
             elif event["type"] == "local_game_done":
                 busy_processes -= 1
                 logger.info("+++ Process Free. Total Queued: {}. Total Used: {}".format(queued_processes, busy_processes))
@@ -292,6 +300,9 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG if args.v else logging.INFO, filename=args.logfile,
                         format="%(asctime)-15s: %(message)s")
     enable_color_logging(debug_lvl=logging.DEBUG if args.v else logging.INFO)
+    logging.getLogger('backoff').addHandler(logging.StreamHandler())
+    logging.getLogger('backoff').setLevel(logging.DEBUG)
+
     logger.info(intro())
     CONFIG = load_config(args.config or "./config.yml")
     li = lichess.Lichess(CONFIG["token"], CONFIG["url"], __version__)
